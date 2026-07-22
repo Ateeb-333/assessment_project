@@ -18,8 +18,21 @@ SECRET_KEY = os.environ.get(
 DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() in ("1", "true", "yes")
 ALLOWED_HOSTS = [
     h.strip()
-    for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    for h in os.environ.get(
+        "DJANGO_ALLOWED_HOSTS",
+        "localhost,127.0.0.1,.vercel.app",
+    ).split(",")
     if h.strip()
+]
+
+# Needed when the API is on https://*.vercel.app
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "CSRF_TRUSTED_ORIGINS",
+        "https://*.vercel.app",
+    ).split(",")
+    if o.strip()
 ]
 
 INSTALLED_APPS = [
@@ -71,10 +84,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL:
     import dj_database_url
 
+    # On Vercel/serverless, prefer no persistent DB connections (Neon pooled URL).
+    on_vercel = bool(os.environ.get("VERCEL"))
     DATABASES = {
         "default": dj_database_url.config(
             default=DATABASE_URL,
-            conn_max_age=600,
+            conn_max_age=0 if on_vercel else 600,
             ssl_require=os.environ.get("DB_SSL_REQUIRE", "true").lower()
             in ("1", "true", "yes"),
         )
