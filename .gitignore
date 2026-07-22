@@ -1,0 +1,28 @@
+# OS / editor
+.DS_Store
+*.pyc
+__pycache__/
+*.pyo
+.idea/
+.vscode/
+
+# Env / secrets
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# Python
+backend/.venv/
+backend/venv/
+backend/db.sqlite3
+backend/staticfiles/
+*.egg-info/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Logs
+*.log
+npm-debug.log*
