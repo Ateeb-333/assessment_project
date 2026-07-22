@@ -62,7 +62,7 @@ export default function App() {
 
         {loading && <LoadingState />}
 
-        {error && (
+        {error && !loading && (
           <div className="error-banner" role="alert">
             <strong>Could not plan trip.</strong> {error}
             <button type="button" className="btn-ghost" onClick={() => setError('')}>
@@ -88,7 +88,7 @@ export default function App() {
             <section className="logs-section">
               <h2>Daily log sheets</h2>
               <p className="section-lede">
-                One sheet per calendar day. Row totals always sum to 24.00.
+                FMCSA-style Drivers Daily Log — grid, remarks, miles, and 70/8 recap. Totals always sum to 24.00.
               </p>
               {trip.days.map((day) => (
                 <LogSheet
@@ -97,6 +97,9 @@ export default function App() {
                   tripMeta={{
                     from: trip.waypoints?.current?.label,
                     to: trip.waypoints?.dropoff?.label,
+                    carrier: 'Assessment Carrier LLC',
+                    office: 'Home Terminal, USA',
+                    vehicle: 'Unit 101 / Trailer T-205',
                   }}
                 />
               ))}

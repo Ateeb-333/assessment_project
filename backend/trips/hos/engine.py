@@ -55,6 +55,7 @@ class Segment:
     note: str = ""
     lat: Optional[float] = None
     lng: Optional[float] = None
+    miles: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -65,6 +66,7 @@ class Segment:
             "note": self.note,
             "lat": self.lat,
             "lng": self.lng,
+            "miles": round(self.miles, 2) if self.miles else 0.0,
         }
 
 
@@ -134,6 +136,7 @@ def _emit(
     note: str = "",
     lat: Optional[float] = None,
     lng: Optional[float] = None,
+    miles: float = 0.0,
 ) -> Segment:
     if minutes <= 0:
         raise ValueError("segment duration must be positive")
@@ -147,6 +150,7 @@ def _emit(
         note=note,
         lat=lat,
         lng=lng,
+        miles=miles,
     )
     segments.append(seg)
     state.now = end
@@ -172,7 +176,14 @@ def _reset_after_rest(state: ClockState) -> None:
     state.window_start = None
 
 
-def _maybe_restart(state: ClockState, segments: List[Segment], stops: List[Stop], location: str) -> int:
+def _maybe_restart(
+    state: ClockState,
+    segments: List[Segment],
+    stops: List[Stop],
+    location: str,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+) -> int:
     """Insert 34h OFF restart if cycle is exhausted. Returns restarts added."""
     restarts = 0
     while state.cycle_used >= CYCLE_LIMIT_MIN:
@@ -183,12 +194,14 @@ def _maybe_restart(state: ClockState, segments: List[Segment], stops: List[Stop]
             RESTART_DURATION_MIN,
             location=location,
             note="34-hour restart",
+            lat=lat,
+            lng=lng,
         )
         stops.append(
             Stop(
                 type="restart",
-                lat=None,
-                lng=None,
+                lat=lat,
+                lng=lng,
                 label=location or "Restart",
                 arrival=segments[-1].start,
                 duration_hours=_hours(RESTART_DURATION_MIN),
@@ -199,6 +212,27 @@ def _maybe_restart(state: ClockState, segments: List[Segment], stops: List[Stop]
         _reset_after_rest(state)
         restarts += 1
     return restarts
+
+
+def _ensure_cycle_room(
+    state: ClockState,
+    segments: List[Segment],
+    stops: List[Stop],
+    needed_min: int,
+    location: str,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+) -> int:
+    """
+    If the next on-duty block cannot fit in the remaining cycle, take a 34h restart
+    first (forfeiting leftover cycle minutes). Returns restarts added.
+    """
+    if needed_min <= 0:
+        return 0
+    if state.cycle_used + needed_min <= CYCLE_LIMIT_MIN:
+        return 0
+    state.cycle_used = CYCLE_LIMIT_MIN
+    return _maybe_restart(state, segments, stops, location, lat=lat, lng=lng)
 
 
 def _insert_rest(
@@ -306,12 +340,13 @@ def _insert_fuel(
 def _binding_drive_cap(state: ClockState, remaining_leg_min: int, miles_left_to_fuel: float, speed_mph: float) -> Tuple[int, str]:
     """
     Return (max_drive_minutes, reason) where reason is one of:
-    drive | window | break | fuel | leg
+    drive | window | break | fuel | cycle | leg
     """
     caps = {
         "drive": max(0, DRIVE_LIMIT_MIN - state.driving_this_shift),
         "window": _window_remaining(state) if state.window_start else WINDOW_LIMIT_MIN,
         "break": max(0, BREAK_DRIVE_LIMIT_MIN - state.driving_since_break),
+        "cycle": max(0, CYCLE_LIMIT_MIN - state.cycle_used),
         "leg": remaining_leg_min,
     }
     if speed_mph > 0 and miles_left_to_fuel < float("inf"):
@@ -367,10 +402,20 @@ def plan_trip(
 
     for item in work_items:
         if item.kind == "on_duty":
-            restarts_taken += _maybe_restart(state, segments, stops, item.location)
             minutes = int(round(item.duration_hours * 60))
+            restarts_taken += _maybe_restart(
+                state, segments, stops, item.location, lat=item.lat, lng=item.lng
+            )
+            restarts_taken += _ensure_cycle_room(
+                state, segments, stops, minutes, item.location, lat=item.lat, lng=item.lng
+            )
             note_lower = (item.note or "").lower()
-            stop_type = "pickup" if "pickup" in note_lower else "dropoff" if "dropoff" in note_lower or "drop-off" in note_lower else "on_duty"
+            if "pickup" in note_lower:
+                stop_type = "pickup"
+            elif "dropoff" in note_lower or "drop-off" in note_lower:
+                stop_type = "dropoff"
+            else:
+                stop_type = "pickup"
 
             _emit(
                 segments,
@@ -389,7 +434,7 @@ def plan_trip(
 
             stops.append(
                 Stop(
-                    type=stop_type if stop_type in ("pickup", "dropoff") else "pickup",
+                    type=stop_type,
                     lat=item.lat,
                     lng=item.lng,
                     label=item.location or item.note,
@@ -411,30 +456,29 @@ def plan_trip(
 
         leg_start_miles = cum_drive_miles
         leg_total_miles = remaining_miles or 1.0
-        leg_start_min = cum_drive_min
-        leg_total_min = remaining_min or 1
 
         while remaining_min > 0:
-            restarts_taken += _maybe_restart(state, segments, stops, item.location)
+            restarts_taken += _maybe_restart(
+                state, segments, stops, item.location, lat=item.lat, lng=item.lng
+            )
 
-            # If already at a hard limit with zero drive allowance, insert the required stop first.
-            if state.driving_this_shift >= DRIVE_LIMIT_MIN or _window_remaining(state) <= 0:
+            def _locate(kind: str):
                 progress = (cum_drive_miles - leg_start_miles) / leg_total_miles
                 lat, lng = _interpolate_point(progress, None, None, item.lat, item.lng)
                 if stop_locator:
-                    lat, lng, label = stop_locator("rest", cum_drive_miles, cum_drive_min / 60.0)
-                else:
-                    label = item.location or "Rest stop"
+                    return stop_locator(kind, cum_drive_miles, cum_drive_min / 60.0)
+                return lat, lng, item.location or kind.title()
+
+            # If already at a hard limit with zero drive allowance, insert the required stop first.
+            if state.driving_this_shift >= DRIVE_LIMIT_MIN or (
+                state.window_start is not None and _window_remaining(state) <= 0
+            ):
+                lat, lng, label = _locate("rest")
                 _insert_rest(state, segments, stops, label, lat, lng)
                 continue
 
             if state.driving_since_break >= BREAK_DRIVE_LIMIT_MIN:
-                progress = (cum_drive_miles - leg_start_miles) / leg_total_miles
-                lat, lng = _interpolate_point(progress, None, None, item.lat, item.lng)
-                if stop_locator:
-                    lat, lng, label = stop_locator("break", cum_drive_miles, cum_drive_min / 60.0)
-                else:
-                    label = item.location or "Break"
+                lat, lng, label = _locate("break")
                 _insert_break(state, segments, stops, label, lat, lng)
                 continue
 
@@ -442,30 +486,27 @@ def plan_trip(
             drive_min, reason = _binding_drive_cap(state, remaining_min, miles_to_fuel, speed_mph)
 
             if drive_min <= 0:
-                # Degenerate: force the binding stop.
-                if reason == "fuel" or state.miles_since_fuel >= FUEL_INTERVAL_MILES:
-                    progress = (cum_drive_miles - leg_start_miles) / leg_total_miles
-                    lat, lng = _interpolate_point(progress, None, None, item.lat, item.lng)
-                    if stop_locator:
-                        lat, lng, label = stop_locator("fuel", cum_drive_miles, cum_drive_min / 60.0)
-                    else:
-                        label = item.location or "Fuel"
+                if reason == "cycle" or state.cycle_used >= CYCLE_LIMIT_MIN:
+                    restarts_taken += _maybe_restart(
+                        state, segments, stops, item.location, lat=item.lat, lng=item.lng
+                    )
+                    if state.cycle_used >= CYCLE_LIMIT_MIN:
+                        # Force restart if still stuck
+                        state.cycle_used = CYCLE_LIMIT_MIN
+                        restarts_taken += _maybe_restart(
+                            state, segments, stops, item.location, lat=item.lat, lng=item.lng
+                        )
+                elif reason == "fuel" or state.miles_since_fuel >= FUEL_INTERVAL_MILES:
+                    restarts_taken += _ensure_cycle_room(
+                        state, segments, stops, FUEL_DURATION_MIN, item.location, lat=item.lat, lng=item.lng
+                    )
+                    lat, lng, label = _locate("fuel")
                     _insert_fuel(state, segments, stops, label, lat, lng)
                 elif reason in ("drive", "window"):
-                    progress = (cum_drive_miles - leg_start_miles) / leg_total_miles
-                    lat, lng = _interpolate_point(progress, None, None, item.lat, item.lng)
-                    if stop_locator:
-                        lat, lng, label = stop_locator("rest", cum_drive_miles, cum_drive_min / 60.0)
-                    else:
-                        label = item.location or "Rest stop"
+                    lat, lng, label = _locate("rest")
                     _insert_rest(state, segments, stops, label, lat, lng)
                 else:
-                    progress = (cum_drive_miles - leg_start_miles) / leg_total_miles
-                    lat, lng = _interpolate_point(progress, None, None, item.lat, item.lng)
-                    if stop_locator:
-                        lat, lng, label = stop_locator("break", cum_drive_miles, cum_drive_min / 60.0)
-                    else:
-                        label = item.location or "Break"
+                    lat, lng, label = _locate("break")
                     _insert_break(state, segments, stops, label, lat, lng)
                 continue
 
@@ -483,6 +524,7 @@ def plan_trip(
                 drive_min,
                 location=item.location,
                 note=item.note or "Driving",
+                miles=miles_this,
             )
             _add_driving(state, drive_min, miles_this)
             remaining_min -= drive_min
@@ -493,26 +535,21 @@ def plan_trip(
             if reason == "leg" or remaining_min <= 0:
                 break
 
-            progress = (cum_drive_miles - leg_start_miles) / leg_total_miles
-            lat, lng = _interpolate_point(progress, None, None, item.lat, item.lng)
+            if reason == "cycle":
+                # Hit 70h — next loop iteration inserts restart
+                continue
 
             if reason == "fuel":
-                if stop_locator:
-                    lat, lng, label = stop_locator("fuel", cum_drive_miles, cum_drive_min / 60.0)
-                else:
-                    label = item.location or "Fuel"
+                restarts_taken += _ensure_cycle_room(
+                    state, segments, stops, FUEL_DURATION_MIN, item.location, lat=item.lat, lng=item.lng
+                )
+                lat, lng, label = _locate("fuel")
                 _insert_fuel(state, segments, stops, label, lat, lng)
             elif reason == "break":
-                if stop_locator:
-                    lat, lng, label = stop_locator("break", cum_drive_miles, cum_drive_min / 60.0)
-                else:
-                    label = item.location or "Break"
+                lat, lng, label = _locate("break")
                 _insert_break(state, segments, stops, label, lat, lng)
             elif reason in ("drive", "window"):
-                if stop_locator:
-                    lat, lng, label = stop_locator("rest", cum_drive_miles, cum_drive_min / 60.0)
-                else:
-                    label = item.location or "Rest stop"
+                lat, lng, label = _locate("rest")
                 _insert_rest(state, segments, stops, label, lat, lng)
 
     return PlanResult(

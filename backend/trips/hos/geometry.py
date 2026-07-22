@@ -9,7 +9,7 @@ Point = Tuple[float, float]  # (lat, lng)
 
 
 def haversine_miles(a: Point, b: Point) -> float:
-    from math import radians, sin, cos, sqrt, atan2
+    from math import atan2, cos, radians, sin, sqrt
 
     lat1, lon1 = map(radians, a)
     lat2, lon2 = map(radians, b)
@@ -65,3 +65,19 @@ def point_at_miles(cum_miles: List[float], coords: List[Point], miles: float) ->
 
 def point_at_hours(cum_hours: List[float], coords: List[Point], hours: float) -> Point:
     return _interp(cum_hours, coords, hours)
+
+
+def downsample_geometry(
+    coords: Sequence[Sequence[float]], max_points: int = 500
+) -> List[List[float]]:
+    """Keep map payloads light for Leaflet without losing overall shape."""
+    n = len(coords)
+    if n <= max_points or max_points < 3:
+        return [list(c) for c in coords]
+    out = [list(coords[0])]
+    step = (n - 1) / (max_points - 1)
+    for i in range(1, max_points - 1):
+        idx = int(round(i * step))
+        out.append(list(coords[idx]))
+    out.append(list(coords[-1]))
+    return out

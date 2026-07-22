@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import 'leaflet/dist/leaflet.css'
 
 const stopColors = {
+  current: '#334155',
   pickup: '#1a6b4a',
   dropoff: '#8b3a2a',
   fuel: '#b45309',
@@ -38,32 +39,43 @@ export default function RouteMap({ trip }) {
 
   const geometry = trip.route.geometry
   const stops = (trip.stops || []).filter((s) => s.lat != null && s.lng != null)
+  const waypoints = trip.waypoints || {}
+
+  const markers = [
+    waypoints.current && {
+      type: 'current',
+      lat: waypoints.current.lat,
+      lng: waypoints.current.lng,
+      label: waypoints.current.label,
+      arrival: null,
+      duration_hours: null,
+    },
+    ...stops,
+  ].filter(Boolean)
 
   return (
     <div className="map-wrap">
-      <MapContainer
-        center={geometry[0]}
-        zoom={5}
-        scrollWheelZoom
-        className="route-map"
-      >
+      <MapContainer center={geometry[0]} zoom={5} scrollWheelZoom className="route-map">
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <Polyline positions={geometry} pathOptions={{ color: '#1a6b4a', weight: 4, opacity: 0.85 }} />
+        <Polyline
+          positions={geometry}
+          pathOptions={{ color: '#1a6b4a', weight: 4, opacity: 0.85 }}
+        />
         <FitBounds positions={geometry} />
-        {stops.map((stop, i) => (
+        {markers.map((stop, i) => (
           <Marker
-            key={`${stop.type}-${i}`}
+            key={`${stop.type}-${i}-${stop.lat}`}
             position={[stop.lat, stop.lng]}
             icon={makeIcon(stopColors[stop.type] || '#334155')}
           >
             <Popup>
               <strong>{stop.type}</strong>
               <div>{stop.label}</div>
-              <div>{new Date(stop.arrival).toLocaleString()}</div>
-              <div>{stop.duration_hours}h</div>
+              {stop.arrival && <div>{new Date(stop.arrival).toLocaleString()}</div>}
+              {stop.duration_hours != null && <div>{stop.duration_hours}h</div>}
             </Popup>
           </Marker>
         ))}

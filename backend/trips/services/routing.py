@@ -17,9 +17,16 @@ _geocode_cache: Dict[str, Point] = {}
 _reverse_cache: Dict[str, str] = {}
 
 ORS_BASE = "https://api.openrouteservice.org"
-OSRM_BASE = "https://router.project-osrm.org"
+# Prefer HTTP for the public OSRM demo — macOS system Python/LibreSSL often fails
+# TLS handshake against router.project-osrm.org over HTTPS.
+OSRM_BASES = (
+    "http://router.project-osrm.org",
+    "https://router.project-osrm.org",
+)
 NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
 USER_AGENT = "ELDTripPlanner/1.0 (assessment; contact: github.com/Ateeb-333)"
+AVG_TRUCK_MPH = 55.0
+ROAD_FACTOR = 1.25  # straight-line → approximate road miles
 
 
 class RoutingError(Exception):
@@ -49,7 +56,7 @@ def geocode(query: str) -> Point:
     return point
 
 
-def reverse_geocode(lat: float, lng: float) -> str:
+def reverse_geocode(lat: float, lng: float, *, allow_slow: bool = False) -> str:
     cache_key = f"{lat:.4f},{lng:.4f}"
     if cache_key in _reverse_cache:
         return _reverse_cache[cache_key]
@@ -62,11 +69,15 @@ def reverse_geocode(lat: float, lng: float) -> str:
         except Exception as exc:
             logger.warning("ORS reverse failed (%s)", exc)
 
-    if not label:
+    # Nominatim is rate-limited; skip during multi-stop planning unless explicitly allowed.
+    if not label and allow_slow:
         try:
             label = _nominatim_reverse(lat, lng)
         except Exception:
-            label = f"{lat:.3f}, {lng:.3f}"
+            label = None
+
+    if not label:
+        label = f"{lat:.3f}, {lng:.3f}"
 
     _reverse_cache[cache_key] = label
     return label
@@ -94,7 +105,11 @@ def route(points: List[Point]) -> dict:
             except Exception as exc2:
                 logger.warning("ORS driving-car failed (%s); falling back to OSRM", exc2)
 
-    return _osrm_route(points)
+    try:
+        return _osrm_route(points)
+    except Exception as exc:
+        logger.warning("OSRM failed (%s); using approximate road geometry", exc)
+        return _approximate_route(points)
 
 
 def _ors_geocode(query: str, api_key: str) -> Point:
@@ -222,31 +237,83 @@ def _nominatim_reverse(lat: float, lng: float) -> str:
     return data.get("display_name", f"{lat:.3f}, {lng:.3f}").split(",")[0]
 
 
-def _osrm_route(points: List[Point]) -> dict:
-    coord_str = ";".join(f"{lng},{lat}" for lat, lng in points)
-    url = f"{OSRM_BASE}/route/v1/driving/{coord_str}"
-    resp = requests.get(
-        url,
-        params={"overview": "full", "geometries": "geojson", "steps": "false"},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("code") != "Ok" or not data.get("routes"):
-        raise RoutingError("No route found between those locations")
-    r = data["routes"][0]
-    geometry = [[c[1], c[0]] for c in r["geometry"]["coordinates"]]
+def _haversine_miles(a: Point, b: Point) -> float:
+    from math import atan2, cos, radians, sin, sqrt
+
+    lat1, lon1 = map(radians, a)
+    lat2, lon2 = map(radians, b)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 3958.7613 * 2 * atan2(sqrt(h), sqrt(1 - h))
+
+
+def _interpolate_line(a: Point, b: Point, steps: int = 32) -> List[List[float]]:
+    pts = []
+    for i in range(steps + 1):
+        t = i / steps
+        pts.append([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+    return pts
+
+
+def _approximate_route(points: List[Point]) -> dict:
+    """Last-resort route when external routers are unreachable (SSL / network)."""
+    geometry: List[List[float]] = []
     legs = []
-    for leg in r.get("legs") or []:
-        legs.append(
-            {
-                "distance_miles": round(leg.get("distance", 0) / 1609.344, 2),
-                "duration_hours": round(leg.get("duration", 0) / 3600.0, 4),
-            }
-        )
+    for i in range(len(points) - 1):
+        a, b = points[i], points[i + 1]
+        segment = _interpolate_line(a, b)
+        if geometry:
+            segment = segment[1:]
+        geometry.extend(segment)
+        miles = round(_haversine_miles(a, b) * ROAD_FACTOR, 2)
+        hours = round(miles / AVG_TRUCK_MPH, 4) if miles else 0.0
+        legs.append({"distance_miles": miles, "duration_hours": hours})
+
+    total_miles = round(sum(l["distance_miles"] for l in legs), 2)
+    total_hours = round(sum(l["duration_hours"] for l in legs), 4)
     return {
         "geometry": geometry,
-        "total_distance_miles": round(r.get("distance", 0) / 1609.344, 2),
-        "total_drive_hours": round(r.get("duration", 0) / 3600.0, 4),
+        "total_distance_miles": total_miles,
+        "total_drive_hours": total_hours,
         "legs": legs,
     }
+
+
+def _osrm_route(points: List[Point]) -> dict:
+    coord_str = ";".join(f"{lng},{lat}" for lat, lng in points)
+    last_error: Optional[Exception] = None
+
+    for base in OSRM_BASES:
+        url = f"{base}/route/v1/driving/{coord_str}"
+        try:
+            resp = requests.get(
+                url,
+                params={"overview": "full", "geometries": "geojson", "steps": "false"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != "Ok" or not data.get("routes"):
+                raise RoutingError("No route found between those locations")
+            r = data["routes"][0]
+            geometry = [[c[1], c[0]] for c in r["geometry"]["coordinates"]]
+            legs = []
+            for leg in r.get("legs") or []:
+                legs.append(
+                    {
+                        "distance_miles": round(leg.get("distance", 0) / 1609.344, 2),
+                        "duration_hours": round(leg.get("duration", 0) / 3600.0, 4),
+                    }
+                )
+            return {
+                "geometry": geometry,
+                "total_distance_miles": round(r.get("distance", 0) / 1609.344, 2),
+                "total_drive_hours": round(r.get("duration", 0) / 3600.0, 4),
+                "legs": legs,
+            }
+        except Exception as exc:
+            last_error = exc
+            logger.warning("OSRM via %s failed: %s", base, exc)
+
+    raise RoutingError(str(last_error) if last_error else "OSRM routing failed")

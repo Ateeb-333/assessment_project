@@ -26,3 +26,7 @@ frontend/dist/
 # Logs
 *.log
 npm-debug.log*
+
+# Large reference docs kept locally
+fmcsa-hos-395-drivers-guide-to-hos-2022-04-28-0-1-.pdf
+docs-fmcsa-toc.png

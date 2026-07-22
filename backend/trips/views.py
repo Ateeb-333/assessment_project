@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .hos import WorkItem, plan_trip, split_into_days
-from .hos.geometry import build_cumulative, point_at_hours, point_at_miles
+from .hos.geometry import build_cumulative, downsample_geometry, point_at_hours, point_at_miles
 from .models import Trip
 from .serializers import TripCreateSerializer
 from .services.routing import RoutingError, geocode, reverse_geocode, route
@@ -67,10 +67,12 @@ class TripCreateView(APIView):
                 lat, lng = point_at_miles(cum_miles, coords, miles_along)
             else:
                 lat, lng = point_at_hours(cum_hours, coords, drive_hours_along)
+            # Prefer a fast label; reverse-geocode is best-effort (Nominatim is slow/rate-limited).
+            label = f"{lat:.3f}, {lng:.3f}"
             try:
-                label = reverse_geocode(lat, lng)
+                label = reverse_geocode(lat, lng, allow_slow=False)
             except Exception:
-                label = f"{lat:.3f}, {lng:.3f}"
+                pass
             return lat, lng, label
 
         work = [
@@ -118,17 +120,16 @@ class TripCreateView(APIView):
             start_datetime=naive_start,
             stop_locator=stop_locator,
         )
-        days = split_into_days(plan.segments)
+        days = split_into_days(
+            plan.segments,
+            cycle_used_start_hours=float(data["current_cycle_used"]),
+        )
 
-        # Enrich mid-route stops that lack coords
-        for stop in plan.stops:
-            if stop.lat is None and stop.type in ("break", "rest", "fuel", "restart"):
-                # leave as-is; locator usually filled them
-                pass
+        map_geometry = downsample_geometry(routed["geometry"], max_points=600)
 
         result = {
             "route": {
-                "geometry": routed["geometry"],
+                "geometry": map_geometry,
                 "total_distance_miles": routed["total_distance_miles"],
                 "total_drive_hours": routed["total_drive_hours"],
             },

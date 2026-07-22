@@ -33,14 +33,20 @@ Full-stack trip planner that takes current / pickup / dropoff locations plus cyc
 
 ## HOS rules implemented
 
+Source: FMCSA *Interstate Truck Driver’s Guide to Hours of Service* (April 2022), property-carrying CMVs.
+
 | Clock | Counts | Limit | Reset |
 |---|---|---|---|
 | **Driving** | Cumulative driving in a shift | 11 hrs | 10 consecutive hrs off duty (logged as SB) |
 | **Window** | Elapsed wall time since going on duty | 14 hrs | 10 consecutive hrs off duty |
-| **Break** | Driving since last ≥30 min non-driving | 8 hrs | Any 30 consecutive min not driving |
+| **Break** | Driving since last ≥30 min non-driving | 8 hrs | Any 30 consecutive min not driving (OFF, ON, or SB) |
 | **Cycle** | Total on-duty time (driving + non-driving) | 70 hrs / 8 days | 34 consecutive hrs off duty |
 
-The 14-hour window does **not** pause for breaks, fuel, or loading. Pickup (1h ON) and fuel (30m ON) reset the break clock — the planner does not stack a redundant break after them.
+The 14-hour window does **not** pause for breaks, fuel, or loading. Pickup (1h ON) and fuel (30m ON) reset the break clock — the planner does not stack a redundant break after them. Non-driving work after the 14th hour is allowed by regulation; this planner inserts a 10-hour rest so the trip can continue legally.
+
+Daily log sheets follow RODS requirements from the guide: date, total miles driving today, carrier/vehicle fields, 24-hour graph grid, remarks at each duty-status change, totals (=24), and a simplified 70/8 recap.
+
+Reference PDF in repo: `fmcsa-hos-395-drivers-guide-to-hos-2022-04-28-0-1-.pdf`
 
 ## Known limitations
 

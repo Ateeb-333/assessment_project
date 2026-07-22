@@ -112,3 +112,59 @@ class HosEngineTests(SimpleTestCase):
         plan = plan_trip(work, cycle_used_hours=5.0, start_datetime=datetime(2026, 7, 23, 5, 30))
         for d in split_into_days(plan.segments):
             self.assertAlmostEqual(sum(d["totals"].values()), 24.0, places=1)
+
+    def test_cycle_never_exceeds_seventy_without_restart(self):
+        work = [
+            _drive(6.0, 330),
+            _on(1.0, "Pickup"),
+            _drive(12.0, 660),
+            _on(1.0, "Dropoff"),
+        ]
+        plan = plan_trip(work, cycle_used_hours=68.0, start_datetime=datetime(2026, 7, 23, 6, 0))
+        self.assertGreaterEqual(plan.restarts_taken, 1)
+        cycle = 68 * 60
+        for seg in plan.segments:
+            mins = int((seg.end - seg.start).total_seconds() // 60)
+            if seg.note == "34-hour restart":
+                self.assertGreaterEqual(cycle, 70 * 60)
+                cycle = 0
+                continue
+            if seg.status in ("D", "ON"):
+                self.assertLessEqual(cycle, 70 * 60)
+                cycle += mins
+                self.assertLessEqual(cycle, 70 * 60)
+
+    def test_no_more_than_eight_hours_driving_without_break(self):
+        work = [_drive(13.0, 715)]
+        plan = plan_trip(work, cycle_used_hours=0.0, start_datetime=datetime(2026, 7, 23, 6, 0))
+        streak = 0
+        for seg in plan.segments:
+            mins = int((seg.end - seg.start).total_seconds() // 60)
+            if seg.status == "D":
+                streak += mins
+                self.assertLessEqual(streak, 8 * 60)
+            elif mins >= 30:
+                streak = 0
+
+    def test_fourteen_hour_window_not_exceeded(self):
+        work = [
+            _drive(5.0, 275),
+            _on(1.0, "Pickup"),
+            _drive(9.0, 495),
+            _on(1.0, "Dropoff"),
+        ]
+        plan = plan_trip(work, cycle_used_hours=0.0, start_datetime=datetime(2026, 7, 23, 6, 0))
+        window_start = None
+        for seg in plan.segments:
+            if seg.note == "10-hour rest" or seg.note == "34-hour restart":
+                window_start = None
+                continue
+            if seg.status in ("D", "ON", "OFF") and seg.note != "Before duty":
+                # OFF break still inside window
+                if window_start is None and seg.status in ("D", "ON"):
+                    window_start = seg.start
+                if window_start is not None and seg.status in ("D", "ON", "OFF"):
+                    elapsed = (seg.end - window_start).total_seconds() / 3600.0
+                    # Driving/ON must not end after window > 14h
+                    if seg.status in ("D", "ON"):
+                        self.assertLessEqual(elapsed, 14.02)
