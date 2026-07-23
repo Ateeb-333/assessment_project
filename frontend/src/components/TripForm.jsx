@@ -31,6 +31,10 @@ export default function TripForm({ onSubmit, loading }) {
 
   return (
     <form className="trip-form" onSubmit={handleSubmit}>
+      <div className="form-intro">
+        <h3>Trip details</h3>
+        <p>City and state work best. Cycle hours already used in your 70/8 window.</p>
+      </div>
       <div className="form-grid">
         <label>
           <span>Current location</span>
@@ -38,7 +42,8 @@ export default function TripForm({ onSubmit, loading }) {
             required
             value={form.current_location}
             onChange={(e) => update('current_location', e.target.value)}
-            placeholder="City, ST"
+            placeholder="Chicago, IL"
+            autoComplete="off"
           />
         </label>
         <label>
@@ -47,7 +52,8 @@ export default function TripForm({ onSubmit, loading }) {
             required
             value={form.pickup_location}
             onChange={(e) => update('pickup_location', e.target.value)}
-            placeholder="City, ST"
+            placeholder="Des Moines, IA"
+            autoComplete="off"
           />
         </label>
         <label>
@@ -56,11 +62,12 @@ export default function TripForm({ onSubmit, loading }) {
             required
             value={form.dropoff_location}
             onChange={(e) => update('dropoff_location', e.target.value)}
-            placeholder="City, ST"
+            placeholder="Denver, CO"
+            autoComplete="off"
           />
         </label>
         <label>
-          <span>Current cycle used (hrs)</span>
+          <span>Cycle used (hrs)</span>
           <input
             required
             type="number"
@@ -72,7 +79,7 @@ export default function TripForm({ onSubmit, loading }) {
           />
         </label>
         <label className="span-2">
-          <span>Start datetime (optional)</span>
+          <span>Start datetime — optional</span>
           <input
             type="datetime-local"
             value={form.start_datetime}
@@ -81,7 +88,8 @@ export default function TripForm({ onSubmit, loading }) {
         </label>
       </div>
       <button type="submit" className="btn-primary" disabled={loading}>
-        {loading ? 'Planning route…' : 'Plan trip'}
+        <span>{loading ? 'Planning…' : 'Plan trip'}</span>
+        {!loading && <span className="btn-arrow" aria-hidden="true">→</span>}
       </button>
     </form>
   )

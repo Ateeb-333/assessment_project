@@ -1,27 +1,57 @@
 export default function TripSummary({ trip, onReset }) {
   if (!trip) return null
   const { summary, route, waypoints } = trip
+
+  const legs = [
+    waypoints?.current?.label,
+    waypoints?.pickup?.label,
+    waypoints?.dropoff?.label,
+  ].filter(Boolean)
+
   return (
-    <div className="trip-summary">
-      <div className="summary-route">
-        <strong>{waypoints?.current?.label}</strong>
-        <span className="arrow">→</span>
-        <strong>{waypoints?.pickup?.label}</strong>
-        <span className="arrow">→</span>
-        <strong>{waypoints?.dropoff?.label}</strong>
+    <div className="trip-summary reveal">
+      <div className="summary-main">
+        <p className="summary-kicker">Planned route</p>
+        <div className="summary-route" aria-label="Trip stops">
+          {legs.map((label, i) => (
+            <span key={`${label}-${i}`} className="summary-leg">
+              {i > 0 && <span className="arrow" aria-hidden="true">→</span>}
+              <strong>{label}</strong>
+            </span>
+          ))}
+        </div>
       </div>
-      <div className="summary-meta">
-        <span>{route.total_distance_miles.toLocaleString()} mi</span>
-        <span>{route.total_drive_hours.toFixed(1)} drive hrs</span>
-        <span>{summary.total_days} day{summary.total_days === 1 ? '' : 's'}</span>
-        <span>
-          Cycle {summary.cycle_used_start.toFixed(1)} → {summary.cycle_used_end.toFixed(1)} hrs
-        </span>
+
+      <dl className="summary-meta">
+        <div>
+          <dt>Distance</dt>
+          <dd>{route.total_distance_miles.toLocaleString()} mi</dd>
+        </div>
+        <div>
+          <dt>Drive time</dt>
+          <dd>{route.total_drive_hours.toFixed(1)} hrs</dd>
+        </div>
+        <div>
+          <dt>Log days</dt>
+          <dd>{summary.total_days}</dd>
+        </div>
+        <div>
+          <dt>Cycle</dt>
+          <dd>
+            {summary.cycle_used_start.toFixed(1)} → {summary.cycle_used_end.toFixed(1)}
+          </dd>
+        </div>
         {summary.restarts_taken > 0 && (
-          <span className="badge">{summary.restarts_taken} restart{summary.restarts_taken === 1 ? '' : 's'}</span>
+          <div className="meta-badge">
+            <dt>Restart</dt>
+            <dd>
+              {summary.restarts_taken}× 34h
+            </dd>
+          </div>
         )}
-      </div>
-      <button type="button" className="btn-ghost" onClick={onReset}>
+      </dl>
+
+      <button type="button" className="btn-ghost summary-reset" onClick={onReset}>
         New trip
       </button>
     </div>
